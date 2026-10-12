@@ -1,0 +1,118 @@
+name: Publish image
+
+# Publishes a new image when the published one is out of date: new commits,
+# a new base image, or Debian package updates. Python packages are pinned in
+# requirements.txt, so their updates come in as commits.
+on:
+  schedule:
+    # Daily at 04:43 in Brisbane, staggered with the other docker-* repos to publish by 05:00
+    - cron: "43 18 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Publish even if nothing changed
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  IMAGE: pedbarbosa/bgg:latest
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The whole history, to find the commits since the published image
+          fetch-depth: 0
+
+      - uses: docker/login-action@v4
+        with:
+          username: pedbarbosa
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Check for changes since the published image
+        id: changes
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          reasons=()
+          [ "$FORCE" != true ] || reasons+=("Publish forced from the workflow run")
+
+          if ! docker pull --quiet "$IMAGE" >/dev/null; then
+            reasons+=("Couldn't pull '$IMAGE', it may not be published yet")
+          else
+            # Changes to docs and CI don't change the image
+            paths=(. ':!*.md' ':!.github')
+            revision=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE")
+            if ! git merge-base --is-ancestor "$revision" HEAD 2>/dev/null; then
+              reasons+=("Its revision '$revision' isn't in this branch's history")
+            elif ! git diff --quiet "$revision" HEAD -- "${paths[@]}"; then
+              reasons+=("New commits since ${revision:0:7}: $(git log --format=%s "$revision..HEAD" -- "${paths[@]}" | paste -sd ';' - | sed 's/;/; /g')")
+            fi
+
+            # The published image is built on the current base image if it
+            # starts with the same layers
+            base=$(awk 'toupper($1) == "FROM" { print $2; exit }' Dockerfile)
+            docker pull --quiet "$base" >/dev/null
+            layers() { docker image inspect --format '{{json .RootFS.Layers}}' "$1"; }
+            jq -en --argjson image "$(layers "$IMAGE")" --argjson base "$(layers "$base")" \
+              '$image[:($base | length)] == $base' >/dev/null \
+              || reasons+=("New '$base' base image")
+
+            output=$(docker run --rm --user root --entrypoint sh "$IMAGE" -c \
+              'apt-get update -qq --error-on=any && apt-get -s -q --with-new-pkgs upgrade')
+            packages=$(awk '$1 == "Inst" { print $2 }' <<<"$output" | paste -sd ' ' -)
+            [ -z "$packages" ] || reasons+=("Debian package updates: $packages")
+          fi
+
+          if [ ${#reasons[@]} -eq 0 ]; then
+            echo "'$IMAGE' is up to date." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo publish=false >>"$GITHUB_OUTPUT"
+          else
+            { echo "Publishing a new image:"; printf -- '- %s\n' "${reasons[@]}"; } | tee -a "$GITHUB_STEP_SUMMARY"
+            echo publish=true >>"$GITHUB_OUTPUT"
+          fi
+
+      # As './rebuild' does locally, so it's tagged, tested and pruned the
+      # same way
+      - name: Build, test and publish the image
+        if: steps.changes.outputs.publish == 'true' && github.ref == 'refs/heads/main'
+        env:
+          # Saves docker-image-refresh's failure message for the Slack step
+          SLACK_NOTIFY: ${{ runner.temp }}/save-failure
+        run: |
+          printf '#!/bin/sh\ncat >"%s"\n' "$RUNNER_TEMP/failure.txt" >"$SLACK_NOTIFY"
+          chmod 755 "$SLACK_NOTIFY"
+          sudo curl -fsSL https://gist.githubusercontent.com/pedbarbosa/5a6ea23c8bcaf90f063eb0a082277d79/raw/docker-image-refresh.sh \
+            -o /usr/local/bin/docker-image-refresh
+          sudo chmod 755 /usr/local/bin/docker-image-refresh
+          ./rebuild
+
+      - name: Send the failure to Slack
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "::warning::SLACK_WEBHOOK_URL isn't set, failure not sent to Slack"
+            exit 0
+          fi
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          if [ -s "$RUNNER_TEMP/failure.txt" ]; then
+            text="$(<"$RUNNER_TEMP/failure.txt")"$'\n'"$run_url"
+          else
+            text=":x: $GITHUB_WORKFLOW failed for '${IMAGE%:*}': $run_url"
+          fi
+          jq -n --arg text "$text" '{text: $text}' \
+            | curl -fsS --retry 3 -H 'Content-Type: application/json' --data @- "$SLACK_WEBHOOK_URL"
