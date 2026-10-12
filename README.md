@@ -153,23 +153,22 @@ The page only reads a generated `collection.json`, so BoardGameGeek is only ever
 
 ### Running it in a container
 
-The `Dockerfile` builds an image that fetches the collection, serves the page on port 8000, and refreshes the collection on a schedule:
+The `Dockerfile` builds an image that fetches the collection, serves the page on port 8000, and refreshes the collection on a schedule. It's published to Docker Hub as [`pedbarbosa/bgg`](https://hub.docker.com/r/pedbarbosa/bgg):
 
 ```
-docker build -t bgg-list .
 docker run -d --name bgg-list -p 8000:8000 \
   -e BGG_API_KEY=your-token-here \
   -e BGG_USERS=alice,bob \
   -v bgg-list-cache:/cache \
-  bgg-list
+  pedbarbosa/bgg
 ```
 
-Then open http://localhost:8000.
+Then open http://localhost:8000. To run your own changes, build the image with `docker build -t bgg-list .` and use `bgg-list` in place of `pedbarbosa/bgg`.
 
 | Variable | What it does |
 | --- | --- |
-| `BGG_API_KEY` | Your BoardGameGeek API key (required) |
-| `BGG_USERS` | Comma-separated BGG usernames (required) |
+| `BGG_API_KEY` | Your BoardGameGeek API key (required to fetch the collection) |
+| `BGG_USERS` | Comma-separated BGG usernames (required to fetch the collection) |
 | `BGG_REFRESH_HOURS` | Hours between refreshes (default `24`) |
 | `BGG_OPTIONS` | Extra `bgg-list` options for each refresh, such as `-x` to leave expansions out |
 | `PORT` | Port to serve on inside the container (default `8000`) |
@@ -177,8 +176,15 @@ Then open http://localhost:8000.
 - Pass the key at run time (`-e`, `--env-file .env`, or your platform's secrets); it's never built into the image, and `.dockerignore` keeps `.env` out of it.
 - Mount a volume on `/cache` so the API cache survives restarts and new versions of the image.
 - If a refresh fails (BGG down, key rejected), the page keeps serving the last good data.
+- Without `BGG_API_KEY` and `BGG_USERS`, the container logs what to set and serves the page without fetching the collection, so it stays healthy.
 - The page is served by Python's built-in web server, which is fine for a home network. To put it on the internet, run it behind a reverse proxy that handles HTTPS, such as Caddy, Traefik or nginx.
-- Arguments after the image name run `bgg-list` once instead, for example `docker run --rm -e BGG_API_KEY=... bgg-list -u alice -p 4`.
+- Arguments after the image name run `bgg-list` once instead, for example `docker run --rm -e BGG_API_KEY=... pedbarbosa/bgg -u alice -p 4`.
+
+### Publishing the image
+
+`./rebuild` builds, tests and publishes the image with [docker-image-refresh](https://gist.github.com/pedbarbosa/5a6ea23c8bcaf90f063eb0a082277d79), which runs `./test <image>` and the image's healthcheck before tagging it `latest`. `./test` checks the image without calling BoardGameGeek: it starts it with no settings, then with a cache seeded from `tests/fixtures` and no network, and checks the page and collection it serves and its shutdown.
+
+The [Publish image](.github/workflows/publish.yml) workflow checks the published image daily and runs `./rebuild` when it's out of date: new commits (other than docs and CI), a new `python` base image, or Debian package updates. It can also be run by hand, with `force` to publish regardless. It needs a `DOCKERHUB_TOKEN` repository secret, a Docker Hub access token with Read, Write and Delete access so old tags can be pruned, and sends failures to the Slack incoming webhook in the `SLACK_WEBHOOK_URL` secret.
 
 ### Previewing it locally
 

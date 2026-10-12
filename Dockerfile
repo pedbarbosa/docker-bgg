@@ -10,6 +10,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app:$PATH" \
     PORT=8000
 
+# For the build only, so apt doesn't try to prompt
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Debian updates newer than the base image
+RUN apt-get update --error-on=any \
+    && apt-get upgrade -y \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Dependencies first, so a code change doesn't reinstall them
