@@ -168,8 +168,8 @@ Then open http://localhost:8000.
 
 | Variable | What it does |
 | --- | --- |
-| `BGG_API_KEY` | Your BoardGameGeek API key (required) |
-| `BGG_USERS` | Comma-separated BGG usernames (required) |
+| `BGG_API_KEY` | Your BoardGameGeek API key (required to fetch the collection) |
+| `BGG_USERS` | Comma-separated BGG usernames (required to fetch the collection) |
 | `BGG_REFRESH_HOURS` | Hours between refreshes (default `24`) |
 | `BGG_OPTIONS` | Extra `bgg-list` options for each refresh, such as `-x` to leave expansions out |
 | `PORT` | Port to serve on inside the container (default `8000`) |
@@ -177,6 +177,7 @@ Then open http://localhost:8000.
 - Pass the key at run time (`-e`, `--env-file .env`, or your platform's secrets); it's never built into the image, and `.dockerignore` keeps `.env` out of it.
 - Mount a volume on `/cache` so the API cache survives restarts and new versions of the image.
 - If a refresh fails (BGG down, key rejected), the page keeps serving the last good data.
+- Without `BGG_API_KEY` and `BGG_USERS`, the container logs what to set and serves the page without fetching the collection, so it stays healthy.
 - The page is served by Python's built-in web server, which is fine for a home network. To put it on the internet, run it behind a reverse proxy that handles HTTPS, such as Caddy, Traefik or nginx.
 - Arguments after the image name run `bgg-list` once instead, for example `docker run --rm -e BGG_API_KEY=... bgg-list -u alice -p 4`.
 

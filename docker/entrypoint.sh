@@ -7,8 +7,6 @@ if [ "$#" -gt 0 ]; then
     exec bgg-list "$@"
 fi
 
-: "${BGG_API_KEY:?Set BGG_API_KEY to your BoardGameGeek API key}"
-: "${BGG_USERS:?Set BGG_USERS to comma-separated BoardGameGeek usernames}"
 REFRESH_HOURS="${BGG_REFRESH_HOURS:-24}"
 DATA=/app/site/collection.json
 
@@ -31,18 +29,26 @@ refresh() {
     fi
 }
 
-refresh
+# Without them the page is still served, so the container stays healthy (as
+# when docker-image-refresh tests the image), but with no collection
+refresher=
+if [ -z "${BGG_API_KEY:-}" ] || [ -z "${BGG_USERS:-}" ]; then
+    echo "Set BGG_API_KEY to your BoardGameGeek API key and BGG_USERS to comma-separated BoardGameGeek usernames;" \
+        "serving the page without refreshing the collection until then." >&2
+else
+    refresh
 
-(
-    while sleep "$((REFRESH_HOURS * 3600))"; do
-        refresh
-    done
-) &
-refresher=$!
+    (
+        while sleep "$((REFRESH_HOURS * 3600))"; do
+            refresh
+        done
+    ) &
+    refresher=$!
+fi
 
 python -m http.server "$PORT" --directory /app/site &
 server=$!
 
 # The shell runs as PID 1, so pass docker stop's signal on to both processes
-trap 'kill "$server" "$refresher" 2>/dev/null; exit 0' TERM INT
+trap 'kill "$server" ${refresher:+"$refresher"} 2>/dev/null; exit 0' TERM INT
 wait "$server"
