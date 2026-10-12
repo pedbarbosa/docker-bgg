@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# Image tests, run by docker-image-refresh after building a new image and
+# before tagging it 'latest'. Usage: ./test <image>
+
+# The check functions are called indirectly, through 'check'
+# shellcheck disable=SC2329
+
+set -euo pipefail
+
+if [ $# -ne 1 ]; then
+    echo "Usage: $0 <image>" >&2
+    exit 2
+fi
+IMAGE=$1
+
+REPO_DIR=$(dirname "$0")
+FIXTURES="$REPO_DIR/tests/fixtures"
+USERNAME=alice
+FAILED=0
+CONTAINER="bgg-test-$$"
+
+# Caches the collection and details in tests/fixtures as freshly fetched for
+# USERNAME, with the image's own code, so a refresh never calls BoardGameGeek
+SEED_CACHE='
+from pathlib import Path
+from bgg_list.cache import Cache, default_cache_dir
+from bgg_list.parsing import parse_collection, parse_things
+
+games = parse_collection(Path("/tmp/fixtures/collection.xml").read_text())
+things = parse_things(Path("/tmp/fixtures/thing.xml").read_text())
+cache = Cache(default_cache_dir())
+cache.set("collections", "'$USERNAME'|all", games)
+for game_id in games:
+    # Every game needs cached details, even the ones BGG had none for
+    cache.set("details", game_id, things.get(game_id, {}))
+cache.save()'
+
+cleanup() {
+    docker rm --force "$CONTAINER" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+check() {
+    local name=$1 output
+    shift
+    if output=$("$@" 2>&1); then
+        echo "PASS: $name"
+    else
+        echo "FAIL: $name"
+        [ -z "$output" ] || echo "    ${output//$'\n'/$'\n'    }"
+        FAILED=1
+    fi
+}
+
+# Prints a page the container serves on its PORT
+fetch() {
+    docker exec "$CONTAINER" sh -c \
+        'python -c "import sys, urllib.request; print(urllib.request.urlopen(sys.argv[1], timeout=3).read().decode())" "http://localhost:$PORT/$0"' \
+        "$1" 2>/dev/null
+}
+
+# Waits for the container to serve a page, and prints it
+wait_for() {
+    for _ in {1..30}; do
+        fetch "$1" && return 0
+        sleep 1
+    done
+    docker logs --tail 20 "$CONTAINER"
+    return 1
+}
+
+runs_as_app() {
+    local user
+    user=$(docker run --rm --entrypoint id "$IMAGE" -un) || return 1
+    [ "$user" = "app" ] || { echo "Runs as '$user'"; return 1; }
+}
+
+# Arguments after the image name run bgg-list instead
+runs_bgg_list() {
+    docker run --rm "$IMAGE" --help | grep -q '^usage: bgg-list'
+}
+
+# As docker-image-refresh starts it for its healthcheck
+serves_page_without_settings() {
+    local page
+    docker run --detach --name "$CONTAINER" --network none "$IMAGE" >/dev/null || return 1
+    page=$(wait_for "") || { echo "$page"; return 1; }
+    grep -q '<title>Board Game Collection</title>' <<<"$page" || { echo "$page" | head -20; return 1; }
+    docker logs "$CONTAINER" 2>&1 | grep -q 'Set BGG_API_KEY'
+}
+
+# With no network, so a refresh that reaches past the cache fails
+serves_collection_from_cache() {
+    local collection expected
+    cleanup
+    docker create --name "$CONTAINER" --network none \
+        -e BGG_API_KEY=not-used -e BGG_USERS="$USERNAME" -e SEED_CACHE="$SEED_CACHE" \
+        --entrypoint sh "$IMAGE" -c 'python -c "$SEED_CACHE" && exec entrypoint.sh' >/dev/null || return 1
+    docker cp --quiet "$FIXTURES" "$CONTAINER:/tmp/fixtures" || return 1
+    docker start "$CONTAINER" >/dev/null || return 1
+
+    collection=$(wait_for collection.json) || { echo "$collection"; return 1; }
+    expected=$(grep -o 'objectid="[0-9]*"' "$FIXTURES/collection.xml" | sort -u | wc -l)
+    jq -e --arg user "$USERNAME" --argjson expected "$expected" \
+        '.users == [$user] and (.games | length) == $expected and all(.games[]; .name != "Unknown")' \
+        <<<"$collection" >/dev/null \
+        || { echo "$collection" | head -c 2000; docker logs --tail 20 "$CONTAINER"; return 1; }
+}
+
+# The entrypoint passes docker stop's signal on, rather than being killed
+stops_cleanly() {
+    local status
+    docker stop -t 10 "$CONTAINER" >/dev/null || return 1
+    status=$(docker inspect --format '{{.State.ExitCode}}' "$CONTAINER") || return 1
+    [ "$status" -eq 0 ] || { echo "Exited with status $status"; docker logs --tail 20 "$CONTAINER"; return 1; }
+}
+
+# Fails when Debian's repositories can't be reached, as well as when
+# packages are out of date
+packages_up_to_date() {
+    local output
+    output=$(docker run --rm --user root --entrypoint sh "$IMAGE" -c \
+        'apt-get update -qq --error-on=any && apt-get -s -q --with-new-pkgs upgrade' 2>&1) \
+        || { echo "$output"; return 1; }
+    ! grep '^Inst ' <<<"$output"
+}
+
+echo "Testing '$IMAGE' ..."
+check "runs as the app user" runs_as_app
+check "runs bgg-list with arguments" runs_bgg_list
+check "serves the page without its settings" serves_page_without_settings
+check "serves the collection from cached BGG data" serves_collection_from_cache
+check "stops cleanly on docker stop" stops_cleanly
+check "Debian packages are up to date" packages_up_to_date
+
+exit $FAILED

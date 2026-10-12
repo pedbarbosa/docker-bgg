@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REFRESH=/usr/local/bin/docker-image-refresh
+GIST_URL=https://gist.githubusercontent.com/pedbarbosa/5a6ea23c8bcaf90f063eb0a082277d79/raw/docker-image-refresh.sh
+
+if [ ! -x "$REFRESH" ]; then
+    cat >&2 <<EOF
+ERROR: '$REFRESH' not found!
+
+Install it from its gist as root, then run this script again:
+
+    sudo curl -fsSL $GIST_URL -o $REFRESH
+    sudo chmod 755 $REFRESH
+
+Run the same commands to update it.
+EOF
+    exit 1
+fi
+
+# docker-image-refresh builds the 'docker-*' directory it's run from
+cd "$(dirname "$0")"
+exec "$REFRESH"
