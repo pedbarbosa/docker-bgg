@@ -169,10 +169,13 @@ Then open http://localhost:8000. To run your own changes, build the image with `
 | --- | --- |
 | `BGG_API_KEY` | Your BoardGameGeek API key (required to fetch the collection) |
 | `BGG_USERS` | Comma-separated BGG usernames (required to fetch the collection) |
+| `PUID` | User ID for the container user (default `10001`; matches your host user so mounted volumes are owned correctly) |
+| `PGID` | Group ID for the container user (default `10001`) |
 | `BGG_REFRESH_HOURS` | Hours between refreshes (default `24`) |
 | `BGG_OPTIONS` | Extra `bgg-list` options for each refresh, such as `-x` to leave expansions out |
 | `PORT` | Port to serve on inside the container (default `8000`) |
 
+- Pass `PUID`/`PGID` at run time (`-e`, `--env-file .env`, or your platform's secrets) to set the user and group IDs for the container process; mounted host volumes will be owned correctly without needing extra `chown` steps.
 - Pass the key at run time (`-e`, `--env-file .env`, or your platform's secrets); it's never built into the image, and `.dockerignore` keeps `.env` out of it.
 - Mount a volume on `/cache` so the API cache survives restarts and new versions of the image.
 - If a refresh fails (BGG down, key rejected), the page keeps serving the last good data.

@@ -30,10 +30,18 @@ COPY bgg_list ./bgg_list
 COPY site ./site
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
-# Run as an unprivileged user that can only write the cache and the page's data
+# Run as an unprivileged user that can only write the cache and the page's data.
+# Install sudo so package managers (e.g. patch_containers) can run apt inside
+# the container when it is running as non-root.
 RUN useradd --system --uid 10001 --no-create-home app \
     && mkdir /cache \
-    && chown app /cache /app/site
+    && chown app /cache /app/site \
+    && apt-get update --error-on=any \
+    && apt-get install -y --no-install-recommends sudo \
+    && echo '%sudo ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/nopasswd \
+    && chmod 440 /etc/sudoers.d/nopasswd \
+    && usermod -aG sudo app
+
 USER app
 
 VOLUME /cache
