@@ -3,6 +3,23 @@
 # every BGG_REFRESH_HOURS. With arguments, runs bgg-list with them instead.
 set -eu
 
+# Adjust user IDs to match host (e.g. PUID/PGID in .env or docker-compose).
+# Matches the linuxserver pattern; when unset the app user keeps its build-time ID.
+PUID="${PUID:-}"
+PGID="${PGID:-}"
+if [ -n "$PUID" ] && [ "$PUID" != "10001" ]; then
+    usermod --uid "$PUID" app 2>/dev/null || true
+fi
+if [ -n "$PGID" ] && [ "$PGID" != "10001" ]; then
+    # Try to modify the existing group; fall back to creating one.
+    if getent group "$PGID" >/dev/null 2>&1; then
+        usermod -g "$PGID" app 2>/dev/null || true
+    else
+        groupadd -g "$PGID" appgroup 2>/dev/null || true
+        usermod -g "$PGID" app 2>/dev/null || true
+    fi
+fi
+
 if [ "$#" -gt 0 ]; then
     exec bgg-list "$@"
 fi
